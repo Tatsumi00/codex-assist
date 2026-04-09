@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Team Orchestrator"
+  short_description: "Persistent planner plus developer and codex review loop"
+  default_prompt: "Use $agent-team-orchestrator to install a persistent repo workflow where Codex plans the TODO list, then runs each task through a developer phase and a codex review phase before marking it done."

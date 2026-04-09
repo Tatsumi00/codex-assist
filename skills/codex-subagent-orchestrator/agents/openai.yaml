@@ -1,0 +1,5 @@
+interface:
+  display_name: "Codex Subagent Orchestrator"
+  short_description: "Long-running main/subagent watchdog loop"
+  default_prompt: "Use $codex-subagent-orchestrator to set up a main Codex agent that spawns fresh subagent `codex exec` workers plus a watchdog in this repo."
+
