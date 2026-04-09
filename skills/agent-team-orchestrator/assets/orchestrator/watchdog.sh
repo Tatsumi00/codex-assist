@@ -40,6 +40,7 @@ STOP_FILE="$LOOP_DIR/STOP"
 DONE_FILE="$LOOP_DIR/DONE"
 TODO_FILE="$LOOP_DIR/TODO.md"
 PAUSED_FILE="$LOOP_DIR/PAUSED"
+DEADLINE_STOPPED_FILE="$LOOP_DIR/DEADLINE_STOPPED"
 MAIN_LOCK_DIR="$LOOP_DIR/main.lock"
 MAIN_LOCK_PID_FILE="$MAIN_LOCK_DIR/pid"
 WATCHDOG_LOG="$LOOP_DIR/watchdog.log"
@@ -243,6 +244,11 @@ while true; do
     continue
   else
     last_paused_mtime=""
+  fi
+
+  if [[ -f "$DEADLINE_STOPPED_FILE" ]]; then
+    log "DEADLINE_STOPPED present; watchdog exiting"
+    exit 0
   fi
 
   if [[ -f "$DONE_FILE" ]]; then

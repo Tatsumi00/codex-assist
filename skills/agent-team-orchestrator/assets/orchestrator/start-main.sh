@@ -16,6 +16,8 @@ Environment overrides:
   STARTUP_GRACE_SECS=5
   START_MODE=auto
   DONE_GUARD_CMD=
+  MILESTONE_HOOK_CMD=
+  DEADLINE_AT=
 
 State and logs are written under:
   WORKDIR/.codex/agent-team/
@@ -36,6 +38,8 @@ MAX_PHASE_RETRIES="${MAX_PHASE_RETRIES:-2}"
 STARTUP_GRACE_SECS="${STARTUP_GRACE_SECS:-5}"
 START_MODE="${START_MODE:-auto}"
 DONE_GUARD_CMD="${DONE_GUARD_CMD:-}"
+MILESTONE_HOOK_CMD="${MILESTONE_HOOK_CMD:-}"
+DEADLINE_AT="${DEADLINE_AT:-}"
 
 WORKDIR="${1:-${WORKDIR:-$PWD}}"
 WORKDIR="$(cd "$WORKDIR" && pwd)"
@@ -50,6 +54,8 @@ MAIN_LOCK_PID_FILE="$MAIN_LOCK_DIR/pid"
 STOP_FILE="$LOOP_DIR/STOP"
 DONE_FILE="$LOOP_DIR/DONE"
 PAUSED_FILE="$LOOP_DIR/PAUSED"
+DEADLINE_FILE="$LOOP_DIR/DEADLINE_AT"
+DEADLINE_STOPPED_FILE="$LOOP_DIR/DEADLINE_STOPPED"
 
 mkdir -p "$RUNS_DIR"
 
@@ -182,7 +188,7 @@ prepare_resume_state() {
   remove_stale_pid_file
   remove_stale_main_session_file
   remove_stale_main_lock
-  rm -f "$STOP_FILE" "$DONE_FILE" "$PAUSED_FILE"
+  rm -f "$STOP_FILE" "$DONE_FILE" "$PAUSED_FILE" "$DEADLINE_STOPPED_FILE"
 }
 
 if is_running; then
@@ -192,6 +198,9 @@ if is_running; then
 fi
 
 prepare_resume_state
+if [[ -n "$DEADLINE_AT" ]]; then
+  printf '%s\n' "$DEADLINE_AT" >"$DEADLINE_FILE"
+fi
 date +%s >"$HEARTBEAT_FILE" || true
 
 startup_completed_cleanly() {
@@ -233,7 +242,7 @@ resolve_start_mode() {
 }
 
 start_via_nohup() {
-  nohup env TERM=xterm CODEX_BIN="$CODEX_BIN" SANDBOX_MODE="$SANDBOX_MODE" APPROVAL_POLICY="$APPROVAL_POLICY" CODEX_MODEL="$CODEX_MODEL" MAX_REVIEW_ROUNDS="$MAX_REVIEW_ROUNDS" MAX_PHASE_RETRIES="$MAX_PHASE_RETRIES" DONE_GUARD_CMD="$DONE_GUARD_CMD" "${cmd[@]}" <"$MAIN_PROMPT_FILE" >"$LOG_FILE" 2>&1 &
+  nohup env TERM=xterm CODEX_BIN="$CODEX_BIN" SANDBOX_MODE="$SANDBOX_MODE" APPROVAL_POLICY="$APPROVAL_POLICY" CODEX_MODEL="$CODEX_MODEL" MAX_REVIEW_ROUNDS="$MAX_REVIEW_ROUNDS" MAX_PHASE_RETRIES="$MAX_PHASE_RETRIES" DONE_GUARD_CMD="$DONE_GUARD_CMD" MILESTONE_HOOK_CMD="$MILESTONE_HOOK_CMD" "${cmd[@]}" <"$MAIN_PROMPT_FILE" >"$LOG_FILE" 2>&1 &
   echo $! >"$PID_FILE"
   rm -f "$MAIN_SESSION_FILE"
 }
@@ -250,7 +259,7 @@ start_via_tmux() {
     printf -v quoted_cmd '%s%q ' "$quoted_cmd" "$arg"
   done
   local shell_cmd
-  shell_cmd="cd $(printf '%q' "$WORKDIR") && env TERM=xterm CODEX_BIN=$(printf '%q' "$CODEX_BIN") SANDBOX_MODE=$(printf '%q' "$SANDBOX_MODE") APPROVAL_POLICY=$(printf '%q' "$APPROVAL_POLICY") CODEX_MODEL=$(printf '%q' "$CODEX_MODEL") MAX_REVIEW_ROUNDS=$(printf '%q' "$MAX_REVIEW_ROUNDS") MAX_PHASE_RETRIES=$(printf '%q' "$MAX_PHASE_RETRIES") DONE_GUARD_CMD=$(printf '%q' "$DONE_GUARD_CMD") ${quoted_cmd}< $(printf '%q' "$MAIN_PROMPT_FILE") > $(printf '%q' "$LOG_FILE") 2>&1"
+  shell_cmd="cd $(printf '%q' "$WORKDIR") && env TERM=xterm CODEX_BIN=$(printf '%q' "$CODEX_BIN") SANDBOX_MODE=$(printf '%q' "$SANDBOX_MODE") APPROVAL_POLICY=$(printf '%q' "$APPROVAL_POLICY") CODEX_MODEL=$(printf '%q' "$CODEX_MODEL") MAX_REVIEW_ROUNDS=$(printf '%q' "$MAX_REVIEW_ROUNDS") MAX_PHASE_RETRIES=$(printf '%q' "$MAX_PHASE_RETRIES") DONE_GUARD_CMD=$(printf '%q' "$DONE_GUARD_CMD") MILESTONE_HOOK_CMD=$(printf '%q' "$MILESTONE_HOOK_CMD") ${quoted_cmd}< $(printf '%q' "$MAIN_PROMPT_FILE") > $(printf '%q' "$LOG_FILE") 2>&1"
   tmux new-session -d -s "$session_name" "$shell_cmd"
   printf '%s\n' "$session_name" >"$MAIN_SESSION_FILE"
   rm -f "$PID_FILE"
@@ -277,6 +286,12 @@ if [[ -n "$CODEX_MODEL" ]]; then
 fi
 if [[ -n "$DONE_GUARD_CMD" ]]; then
   echo "- done guard: $DONE_GUARD_CMD"
+fi
+if [[ -n "$MILESTONE_HOOK_CMD" ]]; then
+  echo "- milestone hook: $MILESTONE_HOOK_CMD"
+fi
+if [[ -f "$DEADLINE_FILE" ]]; then
+  echo "- deadline: $(cat "$DEADLINE_FILE")"
 fi
 echo "- pid file: $PID_FILE"
 echo "- session file: $MAIN_SESSION_FILE"

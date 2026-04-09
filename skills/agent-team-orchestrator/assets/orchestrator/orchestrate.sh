@@ -10,6 +10,9 @@ DONE_FILE="$LOOP_DIR/DONE"
 PAUSED_FILE="$LOOP_DIR/PAUSED"
 FAILED_FILE="$LOOP_DIR/FAILED.md"
 REPLAN_FILE="$LOOP_DIR/REPLAN"
+DEADLINE_FILE="$LOOP_DIR/DEADLINE_AT"
+DEADLINE_STOPPED_FILE="$LOOP_DIR/DEADLINE_STOPPED"
+FINAL_SUMMARY_FILE="$LOOP_DIR/FINAL_SUMMARY.md"
 RUNS_DIR="$LOOP_DIR/runs"
 TASK_BASELINES_DIR="$LOOP_DIR/task-baselines"
 MAIN_LOCK_DIR="$LOOP_DIR/main.lock"
@@ -24,6 +27,8 @@ CODEX_BIN="${CODEX_BIN:-codex}"
 MAX_REVIEW_ROUNDS="${MAX_REVIEW_ROUNDS:-3}"
 MAX_PHASE_RETRIES="${MAX_PHASE_RETRIES:-2}"
 SUBPROCESS_POLL_SECS="${SUBPROCESS_POLL_SECS:-2}"
+DONE_GUARD_CMD="${DONE_GUARD_CMD:-}"
+MILESTONE_HOOK_CMD="${MILESTONE_HOOK_CMD:-}"
 
 write_heartbeat() {
   date +%s >"$HEARTBEAT_FILE" 2>/dev/null || true
@@ -43,6 +48,75 @@ try:
 except ValueError:
     raise SystemExit(1)
 PY
+}
+
+count_pending_tasks() {
+  if [[ ! -f "$TODO_FILE" ]]; then
+    echo 0
+    return 0
+  fi
+  grep -cE '^[[:space:]]*-[[:space:]]*\[[[:space:]]\][[:space:]]' "$TODO_FILE" 2>/dev/null || echo 0
+}
+
+count_completed_tasks() {
+  if [[ ! -f "$TODO_FILE" ]]; then
+    echo 0
+    return 0
+  fi
+  grep -cE '^[[:space:]]*-[[:space:]]*\[[xX]\][[:space:]]' "$TODO_FILE" 2>/dev/null || echo 0
+}
+
+deadline_epoch() {
+  [[ -f "$DEADLINE_FILE" ]] || return 1
+  python3 - "$DEADLINE_FILE" <<'PY'
+from datetime import datetime
+from pathlib import Path
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="ignore").strip()
+if not text:
+    raise SystemExit(1)
+normalized = text.replace("Z", "+00:00")
+dt = datetime.fromisoformat(normalized)
+if dt.tzinfo is None:
+    raise SystemExit(2)
+print(int(dt.timestamp()))
+PY
+}
+
+deadline_is_reached() {
+  local deadline
+  deadline="$(deadline_epoch 2>/dev/null || true)"
+  [[ -n "$deadline" ]] || return 1
+  local now
+  now="$(date +%s)"
+  (( now >= deadline ))
+}
+
+write_final_summary() {
+  local reason="$1"
+  local now
+  now="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+  local pending
+  pending="$(count_pending_tasks)"
+  local completed
+  completed="$(count_completed_tasks)"
+  local next_row
+  next_row="$(next_task || true)"
+  local next_text="none"
+  if [[ -n "${next_row:-}" ]]; then
+    next_text="$(normalize_task_line "${next_row#*$'\t'}")"
+  fi
+  cat >"$FINAL_SUMMARY_FILE" <<EOF
+# FINAL SUMMARY
+
+- Reason: $reason
+- Finished at: $now
+- Completed tasks: $completed
+- Pending tasks: $pending
+- Next pending task: $next_text
+- Workdir: $(pwd)
+EOF
 }
 
 lock_owner_is_alive() {
@@ -322,7 +396,7 @@ PY
 
 run_done_guard() {
   local run_dir="$1"
-  if [[ -z "${DONE_GUARD_CMD:-}" ]]; then
+  if [[ -z "$DONE_GUARD_CMD" ]]; then
     return 0
   fi
   printf '%s\n' "$DONE_GUARD_CMD" >"$run_dir/guard.cmd"
@@ -335,6 +409,34 @@ run_done_guard() {
     return 0
   fi
   return "$guard_rc"
+}
+
+run_milestone_hook() {
+  local run_dir="$1"
+  local line_no="$2"
+  local task_text="$3"
+  if [[ -z "$MILESTONE_HOOK_CMD" ]]; then
+    return 0
+  fi
+  printf '%s\n' "$MILESTONE_HOOK_CMD" >"$run_dir/hook.cmd"
+  local completed pending
+  completed="$(count_completed_tasks)"
+  pending="$(count_pending_tasks)"
+  set +e
+  HOOK_RUN_DIR="$run_dir" \
+  HOOK_LOOP_DIR="$LOOP_DIR" \
+  HOOK_TASK_LINE_NO="$line_no" \
+  HOOK_TASK_TEXT="$task_text" \
+  HOOK_COMPLETED_TASKS="$completed" \
+  HOOK_PENDING_TASKS="$pending" \
+    bash -lc "$MILESTONE_HOOK_CMD" >"$run_dir/hook.log" 2>&1
+  local hook_rc=$?
+  set -e
+  printf '%s\n' "$hook_rc" >"$run_dir/hook.exit"
+  if (( hook_rc == 0 )); then
+    return 0
+  fi
+  return "$hook_rc"
 }
 
 kill_process_tree() {
@@ -420,6 +522,25 @@ while true; do
   if [[ -f "$STOP_FILE" ]]; then
     state_set_auto "NOW" "- stopping (STOP file present)"
     state_set_auto "NEXT" "- none"
+    write_final_summary "stop requested"
+    write_heartbeat
+    exit 0
+  fi
+
+  if deadline_is_reached; then
+    touch "$DEADLINE_STOPPED_FILE"
+    rm -f "$DONE_FILE" 2>/dev/null || true
+    next_row="$(next_task || true)"
+    if [[ -n "${next_row:-}" ]]; then
+      next_line="${next_row#*$'\t'}"
+      state_set_auto "NEXT" "- $(normalize_task_line "$next_line")"
+    else
+      state_set_auto "NEXT" "- none"
+    fi
+    state_set_auto "NOW" "- stopped (deadline reached)"
+    state_set_auto "LAST" "- deadline reached before starting a new task"
+    state_set_auto "BLOCKERS" "- none"
+    write_final_summary "deadline reached"
     write_heartbeat
     exit 0
   fi
@@ -427,10 +548,12 @@ while true; do
   task_row="$(next_task || true)"
   if [[ -z "${task_row:-}" ]]; then
     touch "$DONE_FILE"
+    rm -f "$DEADLINE_STOPPED_FILE" 2>/dev/null || true
     rm -f "$REPLAN_FILE" 2>/dev/null || true
     state_set_auto "NOW" "- idle (no pending tasks)"
     state_set_auto "BLOCKERS" "- none"
     state_set_auto "NEXT" "- none"
+    write_final_summary "all tasks completed"
     write_heartbeat
     exit 0
   fi
@@ -726,6 +849,14 @@ PY
           state_set_auto "NEXT" "- $(normalize_task_line "$next_line")"
         else
           state_set_auto "NEXT" "- none"
+        fi
+        if ! run_milestone_hook "$run_dir" "$line_no" "$task_text"; then
+          hook_rc="$(cat "$run_dir/hook.exit" 2>/dev/null || true)"
+          [[ -n "$hook_rc" ]] || hook_rc=1
+          append_failed_log "$run_id" "hook" "hook_failed" "$hook_rc" "$task_line" "$run_dir"
+          pause_with_message "$run_id" "hook" "hook_failed" "$hook_rc" "$task_line" "$run_dir/hook.log"
+          write_heartbeat
+          exit 0
         fi
         break 2
       fi

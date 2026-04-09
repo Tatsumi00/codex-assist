@@ -30,6 +30,13 @@ Stop with either:
 - `touch <REPO_DIR>/.codex/agent-team/STOP`
 - `./agent-team-orchestrator/stop-main.sh <REPO_DIR>`
 
+Optional long-run controls:
+
+- put an absolute ISO timestamp into `.codex/agent-team/DEADLINE_AT` to stop before the next task starts after that time
+- or start with `DEADLINE_AT=2026-04-08T23:00:00-07:00`
+- set `DONE_GUARD_CMD='your validation command'` to require a post-review guard before a task is checked off
+- set `MILESTONE_HOOK_CMD='your hook command'` to run a post-completion hook after each checked-off task
+
 ## Workflow
 
 The installed workflow is:
@@ -41,6 +48,8 @@ The installed workflow is:
 5. `codex review` runs on the current workspace changes
 6. If review passes, the task is marked done; if review fails, the feedback is fed back into another developer attempt
 7. If a task blocks, review keeps failing, or validation fails, the loop pauses and waits for human intervention
+8. If a deadline is reached, the loop stops before starting a new task, writes `FINAL_SUMMARY.md`, and exits cleanly
+9. If a milestone hook is configured, it runs after the task is checked off; hook failures pause the loop for intervention
 
 ## Task Design Rules
 
@@ -62,12 +71,16 @@ The scaffold manages these files under `.codex/agent-team/`:
 - `REPLAN`: optional flag; if present, the main orchestrator rewrites the pending plan
 - `PAUSED`: created when a task needs intervention
 - `DONE`: created when no unchecked tasks remain
+- `DEADLINE_AT`: optional absolute timestamp that stops new task pickup after the deadline
+- `DEADLINE_STOPPED`: created when the deadline stop is what ended the run
+- `FINAL_SUMMARY.md`: compact terminal summary written on normal completion, stop, or deadline stop
 - `runs/`: per-attempt developer and review logs
 
 ## Guardrails
 
 - Prefer a dedicated branch or otherwise controlled worktree. `codex review --uncommitted` is most reliable when unrelated changes are not mixed into the same workspace.
 - Use `DONE_GUARD_CMD='your test command'` before `start-main.sh` if a task should only be checked off after an external validation command passes.
+- Use `MILESTONE_HOOK_CMD='your hook command'` if each completed task should trigger screenshots, reports, notifications, or other repo-specific automation.
 - Keep `Working Context` in `STATE.md` short. Put durable decisions there, not large transcripts.
 
 ## Customize
@@ -80,7 +93,18 @@ Useful environment variables for `start-main.sh` and `watchdog.sh`:
 - `MAX_REVIEW_ROUNDS`: maximum developer/review iterations per task
 - `SUBPROCESS_POLL_SECS`: developer/review worker poll interval, default `2`
 - `DONE_GUARD_CMD`: command that must exit `0` before a reviewed task is marked done
+- `MILESTONE_HOOK_CMD`: command run after a task is marked done; receives hook metadata via environment variables
+- `DEADLINE_AT`: absolute ISO timestamp written to `.codex/agent-team/DEADLINE_AT` before launch
 - `STALE_SECS`: watchdog heartbeat timeout
+
+Hook environment variables:
+
+- `HOOK_RUN_DIR`
+- `HOOK_LOOP_DIR`
+- `HOOK_TASK_LINE_NO`
+- `HOOK_TASK_TEXT`
+- `HOOK_COMPLETED_TASKS`
+- `HOOK_PENDING_TASKS`
 
 If you need to tune agent behavior, edit the prompt templates copied into `.codex/agent-team/` after the first start:
 

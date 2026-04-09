@@ -13,12 +13,17 @@ A planner-driven repo workflow that enforces:
 - mandatory `codex review`
 - retry / pause / resume behavior
 - watchdog recovery
+- optional deadline stop
+- optional done guard command
+- optional milestone hook command
 
 Current status:
 
 - hardened and smoke-tested
 - `tmux` is the preferred long-run host
 - `nohup` remains as a fallback start mode
+- supports `.codex/agent-team/DEADLINE_AT`
+- writes `.codex/agent-team/FINAL_SUMMARY.md` when it stops cleanly
 
 Source:
 
